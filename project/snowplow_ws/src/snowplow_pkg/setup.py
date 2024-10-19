@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'lateral_longitudinal_control_node = snowplow_pkg.lateral_longitudinal_control_node:main'
         ],
     },
 )
