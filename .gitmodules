@@ -1,3 +1,0 @@
-[submodule "project/snowplow_ws/src/ros-bridge"]
-	path = project/snowplow_ws/src/ros-bridge
-	url = https://github.com/carla-simulator/ros-bridge.git
