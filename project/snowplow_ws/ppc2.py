@@ -36,9 +36,9 @@ class SimpleController(Node):
         self.last_waypoint_index = 0
 
         # PID controller gains for steering
-        self.steering_kp = 0.8
+        self.steering_kp = 2
         self.steering_ki = 0.0
-        self.steering_kd = 0.1
+        self.steering_kd = 0.0
         self.steering_integral = 0.0
         self.steering_previous_error = 0.0
         self.steering_previous_time = time.time()
@@ -80,6 +80,9 @@ class SimpleController(Node):
             10
         )
 
+        with open("odometry_callback.log", "w") as f:
+            pass
+
         # Timer to send control commands at regular intervals
         self.timer = self.create_timer(0.05, self.publish_control_command)
         self.logger.info('Simple Controller Node Initialized')
@@ -107,6 +110,9 @@ class SimpleController(Node):
 
         Goal is to update self.control.steer and self.control.throttle
         """
+
+        log_entry = "*** Yaw Calculation ***\n"
+
         if self.vehicle is None:
             self.logger.warn("Vehicle reference is not set.")
             return
@@ -114,12 +120,15 @@ class SimpleController(Node):
         # Current vehicle position
         self.vehicle_x = msg.pose.pose.position.x
         self.vehicle_y = msg.pose.pose.position.y
+        log_entry += f"Vehicle X: {self.vehicle_x}\nVehicle Y: {self.vehicle_y}\n"
 
         # Current vehicle yaw (assuming yaw is in radians)
         # Convert quaternion to Euler angles if necessary
         orientation = msg.pose.pose.orientation
+        log_entry += f"Raw Orientation: {orientation}\n"
 
         current_yaw = self.quaternion_to_yaw(orientation)
+        log_entry += f"Calculated Yaw: {current_yaw}\n"
 
         # Get next waypoints
         waypoints_x, waypoints_y = self.waypoint_manager.next_waypoints(
@@ -133,25 +142,37 @@ class SimpleController(Node):
         # Find the closest waypoint index
         closest_index = self.find_closest_waypoint(waypoints_x, waypoints_y, self.vehicle_x, self.vehicle_y)
 
+        log_entry += f"Last Waypoint Index: {self.last_waypoint_index}\n"
+
         # Update last_waypoint_index
         self.last_waypoint_index += closest_index
         if self.last_waypoint_index >= self.waypoint_manager.num_waypoints:
-            self.last_waypoint_index = 0  # Loop back to start or handle as needed
+            raise RuntimeError("Waypoints went overboard")
 
         # Determine desired yaw based on the waypoint before the target waypoint
         target_waypoint_index = self.last_waypoint_index + closest_index
         if target_waypoint_index == 0:
-            previous_waypoint_index = self.waypoint_manager.num_waypoints - 1
-        else:
-            previous_waypoint_index = target_waypoint_index - 1
+            target_waypoint_index += 1
+            self.last_waypoint_index += 1
+        previous_waypoint_index = target_waypoint_index - 1
+
+        log_entry += f"Target Waypoint Index: {target_waypoint_index}\n"
+        log_entry += f"Previous Waypoint Index: {previous_waypoint_index}\n"
+        log_entry += f"Target Waypoint: X={self.waypoint_manager.waypoints_x[target_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[target_waypoint_index]}\n"
+        log_entry += f"Previous Waypoint: X={self.waypoint_manager.waypoints_x[previous_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[previous_waypoint_index]}\n"
 
         desired_yaw = math.atan2(
             self.waypoint_manager.waypoints_y[target_waypoint_index] - self.waypoint_manager.waypoints_y[previous_waypoint_index],
             self.waypoint_manager.waypoints_x[target_waypoint_index] - self.waypoint_manager.waypoints_x[previous_waypoint_index]
         )
 
+        log_entry += f"Computed Desired Yaw: {desired_yaw}\n"
+
         # Compute yaw error
-        yaw_error = self.normalize_angle(desired_yaw - current_yaw)
+        yaw_error = -1 * self.normalize_angle(desired_yaw - current_yaw)
+
+        log_entry += f"Computed Yaw Error: {yaw_error}\n"
+        log_entry += f"\n*** Steering PID Calculation ***\n"
 
         # Get current time and compute delta time
         current_time = time.time()
@@ -159,18 +180,31 @@ class SimpleController(Node):
         if delta_time <= 0.0:
             delta_time = 1e-3  # Prevent division by zero
 
+        log_entry += f"Delta Time: {delta_time}\n"
+
         # Update integral and derivative
         self.steering_integral += yaw_error * delta_time
         derivative = (yaw_error - self.steering_previous_error) / delta_time
 
+        log_entry += f"Steering P (aka Yaw Error): {yaw_error}\n"
+        log_entry += f"Steering I: {self.steering_integral}\n"
+        log_entry += f"Steering D: {derivative}\n"
+
         # Compute steering using PID
-        steering = (
+        original_steering = (
             self.steering_kp * yaw_error +
             self.steering_ki * self.steering_integral +
             self.steering_kd * derivative
         )
-        steering = np.clip(steering, -1.0, 1.0)
-        self.control.steer = steering
+        clipped_steering = np.clip(original_steering, -1.0, 1.0)
+        self.control.steer = clipped_steering
+
+        log_entry += f"Steering P Contribution: {self.steering_kp * yaw_error}\n"
+        log_entry += f"Steering I Contribution: {self.steering_ki * self.steering_integral}\n"
+        log_entry += f"Steering D Contribution: {self.steering_kd * derivative}\n"
+        log_entry += f"Calculated Steering: {original_steering}\n"
+        log_entry += f"Clipped Steering: {clipped_steering}\n"
+
 
         # For simplicity, set throttle to a constant value
         self.control.throttle = 0.2  # Adjust as needed
@@ -179,9 +213,9 @@ class SimpleController(Node):
         self.steering_previous_error = yaw_error
         self.steering_previous_time = current_time
 
-        self.logger.debug(
-            f"Yaw Error: {yaw_error:.4f}, Steering: {steering:.4f}, Throttle: {self.control.throttle}"
-        )
+        with open("odometry_callback.log", "a") as f:
+            log_entry += "\n---\n\n"
+            f.write(log_entry)
 
     def find_closest_waypoint(self, waypoints_x, waypoints_y, x, y):
         """
