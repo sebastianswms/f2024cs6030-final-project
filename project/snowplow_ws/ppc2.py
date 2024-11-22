@@ -29,11 +29,12 @@ class SimpleController(Node):
         self.vehicle = None
         self.control = carla.VehicleControl()
         self.control.steer = 0.0 # Default steering value
-        self.control.throttle = 0.5 # Default throttle value
+        self.control.throttle = 0.0 # Default throttle value
 
-        self.waypoints_lookahead = 30
         self.waypoint_manager = WaypointManager()
         self.last_waypoint_index = 0
+
+        self.obstacle = False
 
         # PID
         self.previous_time = time.time()
@@ -42,12 +43,9 @@ class SimpleController(Node):
         self.speed_integral = 0.0
         self.speed_previous_error = 0.0
 
-
-
-
-        # =================
-        # TUNING PARAMETERS
-        # =================
+        # ===================
+        # <tuning_parameters>
+        # ===================
 
         # PID controller gains for steering
         self.steering_kp = 3
@@ -60,12 +58,12 @@ class SimpleController(Node):
         self.speed_kd = 0.1
 
         # Other tuning parameters
-        self.target_speed_kph = 50
+        self.target_speed_kph = 30 # Kilometers Per Hour
+        self.waypoints_lookahead = 30 # Number of waypoints to look ahead, NOT distance
 
-
-
-        # Publishers
-        self.control_publisher = self.create_publisher(AckermannDrive, '/carla/ego_vehicle/ackermann_cmd', 10)
+        # ====================
+        # </tuning_parameters>
+        # ====================
 
         # Subscribers
         self.create_subscription(
@@ -151,7 +149,7 @@ class SimpleController(Node):
 
         # Get next waypoints
         waypoints_x, waypoints_y = self.waypoint_manager.next_waypoints(
-            self.last_waypoint_index, length=30
+            self.last_waypoint_index, self.waypoints_lookahead
         )
 
         if len(waypoints_x) == 0:
@@ -226,7 +224,12 @@ class SimpleController(Node):
         current_velocity = self.vehicle.get_velocity()
         current_speed = np.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
 
-        speed_error = target_speed_mps - current_speed
+        if self.obstacle:
+            speed_error = -1 * current_speed
+        else:
+            speed_error = target_speed_mps - current_speed
+
+        log_entry += f"Obstacle Detected? {self.obstacle}"
 
         # Update integral and derivative
         self.speed_integral += speed_error * delta_time
@@ -237,19 +240,22 @@ class SimpleController(Node):
         log_entry += f"Speed D: {speed_derivative}\n"
 
         # Compute steering using PID
-        original_throttle = (
+        original_throttle_brake = (
             self.speed_kp * speed_error +
             self.speed_ki * self.speed_integral +
             self.speed_kd * speed_derivative
         )
-        clipped_throttle = np.clip(original_throttle, 0, 1.0)
+        clipped_throttle = np.clip(original_throttle_brake, 0, 1.0)
+        clipped_brake = -1 * np.clip(original_throttle_brake, -1.0, 0)
         self.control.throttle = clipped_throttle
+        self.control.brake = clipped_brake
 
         log_entry += f"Speed P Contribution: {self.speed_kp * speed_error}\n"
         log_entry += f"Speed I Contribution: {self.speed_ki * self.speed_integral}\n"
         log_entry += f"Speed D Contribution: {self.speed_kd * speed_derivative}\n"
-        log_entry += f"Calculated Throttle: {original_steering}\n"
+        log_entry += f"Calculated Throttle/Brake: {original_steering}\n"
         log_entry += f"Clipped Throttle: {clipped_steering}\n"
+        log_entry += f"Clipped Brake: {clipped_brake}\n"
 
         # Update previous error and time for next iteration
         self.steering_previous_error = yaw_error
@@ -323,7 +329,7 @@ class SimpleController(Node):
         if self.vehicle is None:
             return
         self.vehicle.apply_control(self.control)
-        self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle}')
+        self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle},Brake={self.control.brake}')
 
 
 class WaypointManager:
@@ -333,7 +339,7 @@ class WaypointManager:
         self.waypoints_y = waypoints['y'].to_numpy()
         self.num_waypoints = len(self.waypoints_x)
 
-    def next_waypoints(self, last_waypoint_index, length=30):
+    def next_waypoints(self, last_waypoint_index, length):
         """
         Returns the next 'length' waypoints starting from 'last_waypoint_index'.
         Wraps around if the end of the list is reached.
