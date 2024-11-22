@@ -35,21 +35,34 @@ class SimpleController(Node):
         self.waypoint_manager = WaypointManager()
         self.last_waypoint_index = 0
 
-        # PID controller gains for steering
-        self.steering_kp = 2
-        self.steering_ki = 0.0
-        self.steering_kd = 0.0
+        # PID
+        self.previous_time = time.time()
         self.steering_integral = 0.0
         self.steering_previous_error = 0.0
-        self.steering_previous_time = time.time()
+        self.speed_integral = 0.0
+        self.speed_previous_error = 0.0
+
+
+
+
+        # =================
+        # TUNING PARAMETERS
+        # =================
+
+        # PID controller gains for steering
+        self.steering_kp = 3
+        self.steering_ki = 0.0
+        self.steering_kd = 0.0
 
         # PID controller gains for speed
         self.speed_kp = 0.8
         self.speed_ki = 0.0
         self.speed_kd = 0.1
-        self.speed_integral = 0.0
-        self.speed_previous_error = 0.0
-        self.speed_previous_time = time.time()
+
+        # Other tuning parameters
+        self.target_speed_kph = 50
+
+
 
         # Publishers
         self.control_publisher = self.create_publisher(AckermannDrive, '/carla/ego_vehicle/ackermann_cmd', 10)
@@ -116,6 +129,12 @@ class SimpleController(Node):
         if self.vehicle is None:
             self.logger.warn("Vehicle reference is not set.")
             return
+        
+        # Get current time and compute delta time
+        current_time = time.time()
+        delta_time = current_time - self.previous_time
+        if delta_time <= 0.0:
+            delta_time = 1e-3  # Prevent division by zero
 
         # Current vehicle position
         self.vehicle_x = msg.pose.pose.position.x
@@ -173,45 +192,69 @@ class SimpleController(Node):
 
         log_entry += f"Computed Yaw Error: {yaw_error}\n"
         log_entry += f"\n*** Steering PID Calculation ***\n"
-
-        # Get current time and compute delta time
-        current_time = time.time()
-        delta_time = current_time - self.steering_previous_time
-        if delta_time <= 0.0:
-            delta_time = 1e-3  # Prevent division by zero
-
         log_entry += f"Delta Time: {delta_time}\n"
 
         # Update integral and derivative
         self.steering_integral += yaw_error * delta_time
-        derivative = (yaw_error - self.steering_previous_error) / delta_time
+        steering_derivative = (yaw_error - self.steering_previous_error) / delta_time
 
         log_entry += f"Steering P (aka Yaw Error): {yaw_error}\n"
         log_entry += f"Steering I: {self.steering_integral}\n"
-        log_entry += f"Steering D: {derivative}\n"
+        log_entry += f"Steering D: {steering_derivative}\n"
 
         # Compute steering using PID
         original_steering = (
             self.steering_kp * yaw_error +
             self.steering_ki * self.steering_integral +
-            self.steering_kd * derivative
+            self.steering_kd * steering_derivative
         )
         clipped_steering = np.clip(original_steering, -1.0, 1.0)
         self.control.steer = clipped_steering
 
         log_entry += f"Steering P Contribution: {self.steering_kp * yaw_error}\n"
         log_entry += f"Steering I Contribution: {self.steering_ki * self.steering_integral}\n"
-        log_entry += f"Steering D Contribution: {self.steering_kd * derivative}\n"
+        log_entry += f"Steering D Contribution: {self.steering_kd * steering_derivative}\n"
         log_entry += f"Calculated Steering: {original_steering}\n"
         log_entry += f"Clipped Steering: {clipped_steering}\n"
 
+        target_speed_mps = self.target_speed_kph / 3.6
 
-        # For simplicity, set throttle to a constant value
-        self.control.throttle = 0.2  # Adjust as needed
+        log_entry += f"\n*** Speed PID Calculation ***\n"
+        log_entry += f"Delta Time (again): {delta_time}\n"
+        log_entry += f"Target Speed: {target_speed_mps} m/s\n"
+
+        current_velocity = self.vehicle.get_velocity()
+        current_speed = np.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
+
+        speed_error = target_speed_mps - current_speed
+
+        # Update integral and derivative
+        self.speed_integral += speed_error * delta_time
+        speed_derivative = (speed_error - self.speed_previous_error) / delta_time
+
+        log_entry += f"Speed P: {speed_error}\n"
+        log_entry += f"Speed I: {self.speed_integral}\n"
+        log_entry += f"Speed D: {speed_derivative}\n"
+
+        # Compute steering using PID
+        original_throttle = (
+            self.speed_kp * speed_error +
+            self.speed_ki * self.speed_integral +
+            self.speed_kd * speed_derivative
+        )
+        clipped_throttle = np.clip(original_throttle, 0, 1.0)
+        self.control.throttle = clipped_throttle
+
+        log_entry += f"Speed P Contribution: {self.speed_kp * speed_error}\n"
+        log_entry += f"Speed I Contribution: {self.speed_ki * self.speed_integral}\n"
+        log_entry += f"Speed D Contribution: {self.speed_kd * speed_derivative}\n"
+        log_entry += f"Calculated Throttle: {original_steering}\n"
+        log_entry += f"Clipped Throttle: {clipped_steering}\n"
 
         # Update previous error and time for next iteration
         self.steering_previous_error = yaw_error
-        self.steering_previous_time = current_time
+        self.speed_previous_error = speed_error
+        self.previous_time = current_time
 
         with open("odometry_callback.log", "a") as f:
             log_entry += "\n---\n\n"
