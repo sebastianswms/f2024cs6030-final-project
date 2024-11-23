@@ -29,5 +29,10 @@ python3 camera.py
 
 ```bash
 cd ~/ssmiley/f2024cs6030-final-project/project/snowplow_ws &&
+python3 lidar_radar.py
+```
+
+```bash
+cd ~/ssmiley/f2024cs6030-final-project/project/snowplow_ws &&
 python3 ppc2.py
 ```

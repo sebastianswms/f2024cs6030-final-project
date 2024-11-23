@@ -18,7 +18,7 @@ class YoloDetectionNode(Node):
     def __init__(self):
         super().__init__('yolo_detection_node')
         self.subscription = self.create_subscription(Image, '/carla/ego_vehicle/rgb_front/image', self.image_callback, 10)
-        self.stop_publisher = self.create_publisher(Bool, '/carla/ego_vehicle/obstacle_detected', 10)
+        self.stop_publisher = self.create_publisher(Bool, '/carla/ego_vehicle/camera_obstacle_detected', 10)
 
         # Setup for YOLOv3
         self.bridge = CvBridge()
@@ -26,12 +26,32 @@ class YoloDetectionNode(Node):
         self.net = cv2.dnn.readNetFromDarknet("./camera/yolov3.cfg", "./camera/yolov3.weights")
         self.layer_names = [self.net.getLayerNames()[i - 1] for i in self.net.getUnconnectedOutLayers()]
 
-        # Save images
+        # ===================
+        # <tuning_parameters>
+        # ===================
+
+        # The model's guess will only count as a detection box if its confidence
+        # is greater than this value
+        self.minimum_confidence = 0.4
+
+        # To issue a stop command, at least one detection box must have an area in
+        # pixels squared greater than or equal to this value
+        self.minimum_box_size = 900
+
+        self.enable_saving_images = False
         self.save_dir = "./camera/saved_images"
-        if os.path.exists(self.save_dir):
-            shutil.rmtree(self.save_dir)
-        os.makedirs(self.save_dir)
-        self.image_count = 0
+
+
+        # ====================
+        # </tuning_parameters>
+        # ====================
+
+        # Save images
+        if self.enable_saving_images:
+            if os.path.exists(self.save_dir):
+                shutil.rmtree(self.save_dir)
+            os.makedirs(self.save_dir)
+            self.image_count = 0
 
     def image_callback(self, msg):
         image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -48,7 +68,7 @@ class YoloDetectionNode(Node):
                 class_id = np.argmax(scores)
                 confidence = scores[class_id]
 
-                if class_id == self.PERSON_CLASS_ID and confidence > 0.4:
+                if class_id == self.PERSON_CLASS_ID and confidence > self.minimum_confidence:
                     box = detection[0:4] * np.array([W, H, W, H])
                     (centerX, centerY, width, height) = box.astype("int")
                     x = int(centerX - (width / 2))
@@ -58,31 +78,37 @@ class YoloDetectionNode(Node):
                     class_ids.append(class_id)
 
         indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.3)
+        stop_msg = Bool()
 
         if len(indices) > 0:
             published_stop = False
+
             for i in indices.flatten():
-                (x, y) = (boxes[i][0], boxes[i][1])
                 (w, h) = (boxes[i][2], boxes[i][3])
-                color = (0, 255, 0)
-                cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
-                label = "{}: {:.2f}".format(self.class_names[class_ids[i]], confidences[i])
-                cv2.putText(image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                if published_stop is False and w*h > 900:
+                if self.enable_saving_images:
+                    (x, y) = (boxes[i][0], boxes[i][1])
+                    color = (0, 255, 0)
+                    cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
+                    label = "{}: {:.2f}".format(self.class_names[class_ids[i]], confidences[i])
+                    cv2.putText(image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                if published_stop is False and w*h > self.minimum_box_size:
                     published_stop = True
-                    stop_msg = Bool()
                     stop_msg.data = True
-                    self.stop_publisher.publish(stop_msg)
                     self.get_logger().info('Stop flag published.')
             if published_stop is False:
+                stop_msg.data = False
                 self.get_logger().info('Boxes found but they\'re too small, no stop flag.')
 
         else:
+            stop_msg.data = False
             self.get_logger().info('No boxes found, no stop flag.')
 
-        image_filename = os.path.join(self.save_dir, f"image_{self.image_count:05d}.jpg")
-        cv2.imwrite(image_filename, image)
-        self.image_count += 1
+        self.stop_publisher.publish(stop_msg)
+
+        if self.enable_saving_images:
+            image_filename = os.path.join(self.save_dir, f"image_{self.image_count:05d}.jpg")
+            cv2.imwrite(image_filename, image)
+            self.image_count += 1
 
 
 def main(args=None):

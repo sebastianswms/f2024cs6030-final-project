@@ -34,7 +34,8 @@ class SimpleController(Node):
         self.waypoint_manager = WaypointManager()
         self.last_waypoint_index = 0
 
-        self.obstacle = False
+        self.camera_obstacle = False
+        self.lidar_radar_obstacle = False
 
         # PID
         self.previous_time = time.time()
@@ -86,8 +87,14 @@ class SimpleController(Node):
         )
         self.create_subscription(
             Bool,
-            '/carla/ego_vehicle/obstacle_detected',
-            self.obstacle_callback,
+            '/carla/ego_vehicle/camera_obstacle_detected',
+            self.camera_obstacle_callback,
+            10
+        )
+        self.create_subscription(
+            Bool,
+            '/carla/ego_vehicle/lidar_radar_obstacle_detected',
+            self.lidar_radar_obstacle_callback,
             10
         )
 
@@ -224,12 +231,13 @@ class SimpleController(Node):
         current_velocity = self.vehicle.get_velocity()
         current_speed = np.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
 
-        if self.obstacle:
+        obstacle_detected = self.camera_obstacle or self.lidar_radar_obstacle
+        if obstacle_detected:
             speed_error = -1 * current_speed
         else:
             speed_error = target_speed_mps - current_speed
 
-        log_entry += f"Obstacle Detected? {self.obstacle}"
+        log_entry += f"Obstacle Detected? {obstacle_detected}\n"
 
         # Update integral and derivative
         self.speed_integral += speed_error * delta_time
@@ -306,21 +314,31 @@ class SimpleController(Node):
         Callback to receive the vehicle's status.
         """
 
-    def obstacle_callback(self, msg):
-        """
-        Callback to handle obstacle detection.
-        """
+    def camera_obstacle_callback(self, msg):
         obstacle_detected = msg.data
         if obstacle_detected:
-            if self.obstacle is False:
-                self.logger.info('Obstacle detected! Stopping the vehicle.')
-            self.logger.debug("obstacle detected")
-            self.obstacle = True
+            if self.camera_obstacle is False:
+                self.logger.info('Camera obstacle detected! Stopping the vehicle.')
+            self.logger.debug("camera obstacle detected")
+            self.camera_obstacle = True
         else:
-            if self.obstacle is False:
-                self.logger.info('No more obstacles. Resuming vehicle movement!')
-            self.logger.debug("no obstacles detected")
-            self.obstacle = False
+            if self.camera_obstacle is True:
+                self.logger.info('No more camera obstacles.')
+            self.logger.debug("no camera obstacles detected")
+            self.camera_obstacle = False
+
+    def lidar_radar_obstacle_callback(self, msg):
+        obstacle_detected = msg.data
+        if obstacle_detected:
+            if self.lidar_radar_obstacle is False:
+                self.logger.info('Lidar/radar obstacle detected! Stopping the vehicle.')
+            self.logger.debug("lidar/radar obstacle detected")
+            self.lidar_radar_obstacle = True
+        else:
+            if self.lidar_radar_obstacle is True:
+                self.logger.info('No more lidar/radar obstacles.')
+            self.logger.debug("no lidar/radar obstacles detected")
+            self.lidar_radar_obstacle = False
 
     def publish_control_command(self):
         """
