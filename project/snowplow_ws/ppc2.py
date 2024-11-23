@@ -30,6 +30,7 @@ class SimpleController(Node):
         self.control = carla.VehicleControl()
         self.control.steer = 0.0 # Default steering value
         self.control.throttle = 0.0 # Default throttle value
+        self.control.reverse = False  # Start in forward gear
 
         self.waypoint_manager = WaypointManager()
         self.last_waypoint_index = 0
@@ -59,12 +60,18 @@ class SimpleController(Node):
         self.speed_kd = 0.1
 
         # Other tuning parameters
-        self.target_speed_kph = 30 # Kilometers Per Hour
+        self.target_speed_kph = 20 # Kilometers Per Hour
         self.waypoints_lookahead = 30 # Number of waypoints to look ahead, NOT distance
 
         # ====================
         # </tuning_parameters>
         # ====================
+
+        # Gear management
+        self.current_gear = 'forward'  # Can be 'forward' or 'reverse'
+        self.switching_gear = False
+        self.stop_threshold = 0.1  # Speed below which we consider the vehicle stopped
+        self.stop_vehicle = False  # Flag to stop the vehicle when no more batches
 
         # Subscribers
         self.create_subscription(
@@ -129,32 +136,60 @@ class SimpleController(Node):
         Goal is to update self.control.steer and self.control.throttle
         """
 
+        if self.stop_vehicle:
+            return
+
         log_entry = "*** Yaw Calculation ***\n"
 
         if self.vehicle is None:
             self.logger.warn("Vehicle reference is not set.")
             return
-        
-        # Get current time and compute delta time
+
+        if self.switching_gear:
+            self.control.throttle = 0.0
+            self.control.brake = 1.0
+            self.control.steer = 0.0
+
+            current_velocity = self.vehicle.get_velocity()
+            current_speed = np.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
+            if current_speed < self.stop_threshold:
+                if self.current_gear == 'forward':
+                    self.current_gear = 'reverse'
+                    self.control.reverse = True
+                else:
+                    self.current_gear = 'forward'
+                    self.control.reverse = False
+                self.logger.info(f'Switched to {self.current_gear} gear.')
+
+                self.last_waypoint_index = 0
+
+                if not self.waypoint_manager.switch_to_next_batch():
+                    self.logger.info('No more batches. Stopping vehicle.')
+                    self.control.throttle = 0.0
+                    self.control.brake = 1.0
+                    self.control.steer = 0.0
+                    self.stop_vehicle = True
+                else:
+                    self.logger.info(f'Switched to batch {self.waypoint_manager.current_batch_index}')
+                self.switching_gear = False
+            else:
+                return
+
         current_time = time.time()
         delta_time = current_time - self.previous_time
         if delta_time <= 0.0:
             delta_time = 1e-3  # Prevent division by zero
 
-        # Current vehicle position
         self.vehicle_x = msg.pose.pose.position.x
         self.vehicle_y = msg.pose.pose.position.y
         log_entry += f"Vehicle X: {self.vehicle_x}\nVehicle Y: {self.vehicle_y}\n"
 
-        # Current vehicle yaw (assuming yaw is in radians)
-        # Convert quaternion to Euler angles if necessary
         orientation = msg.pose.pose.orientation
         log_entry += f"Raw Orientation: {orientation}\n"
 
         current_yaw = self.quaternion_to_yaw(orientation)
         log_entry += f"Calculated Yaw: {current_yaw}\n"
 
-        # Get next waypoints
         waypoints_x, waypoints_y = self.waypoint_manager.next_waypoints(
             self.last_waypoint_index, self.waypoints_lookahead
         )
@@ -163,37 +198,41 @@ class SimpleController(Node):
             self.logger.warn("No waypoints available.")
             return
 
-        # Find the closest waypoint index
         closest_index = self.find_closest_waypoint(waypoints_x, waypoints_y, self.vehicle_x, self.vehicle_y)
 
         log_entry += f"Last Waypoint Index: {self.last_waypoint_index}\n"
 
-        # Update last_waypoint_index
         self.last_waypoint_index += closest_index
-        if self.last_waypoint_index >= self.waypoint_manager.num_waypoints:
-            raise RuntimeError("Waypoints went overboard")
+        if self.last_waypoint_index >= len(self.waypoint_manager.batches[self.waypoint_manager.current_batch_index]['x']):
+            self.last_waypoint_index = len(self.waypoint_manager.batches[self.waypoint_manager.current_batch_index]['x']) - 1
 
-        # Determine desired yaw based on the waypoint before the target waypoint
-        target_waypoint_index = self.last_waypoint_index + closest_index
+        target_waypoint_index = self.last_waypoint_index
         if target_waypoint_index == 0:
             target_waypoint_index += 1
             self.last_waypoint_index += 1
         previous_waypoint_index = target_waypoint_index - 1
 
+        current_batch = self.waypoint_manager.batches[self.waypoint_manager.current_batch_index]
+
+
         log_entry += f"Target Waypoint Index: {target_waypoint_index}\n"
         log_entry += f"Previous Waypoint Index: {previous_waypoint_index}\n"
-        log_entry += f"Target Waypoint: X={self.waypoint_manager.waypoints_x[target_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[target_waypoint_index]}\n"
-        log_entry += f"Previous Waypoint: X={self.waypoint_manager.waypoints_x[previous_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[previous_waypoint_index]}\n"
+        log_entry += f"Target Waypoint: X={current_batch['x'][target_waypoint_index]}, Y={current_batch['y'][target_waypoint_index]}\n"
+        log_entry += f"Previous Waypoint: X={current_batch['x'][previous_waypoint_index]}, Y={current_batch['y'][previous_waypoint_index]}\n"
 
         desired_yaw = math.atan2(
-            self.waypoint_manager.waypoints_y[target_waypoint_index] - self.waypoint_manager.waypoints_y[previous_waypoint_index],
-            self.waypoint_manager.waypoints_x[target_waypoint_index] - self.waypoint_manager.waypoints_x[previous_waypoint_index]
+            current_batch['y'][target_waypoint_index] - current_batch['y'][previous_waypoint_index],
+            current_batch['x'][target_waypoint_index] - current_batch['x'][previous_waypoint_index]
         )
 
         log_entry += f"Computed Desired Yaw: {desired_yaw}\n"
 
         # Compute yaw error
         yaw_error = -1 * self.normalize_angle(desired_yaw - current_yaw)
+
+        # Adjust yaw error when in reverse gear
+        if self.current_gear == 'reverse':
+            yaw_error *= -1
 
         log_entry += f"Computed Yaw Error: {yaw_error}\n"
         log_entry += f"\n*** Steering PID Calculation ***\n"
@@ -247,7 +286,7 @@ class SimpleController(Node):
         log_entry += f"Speed I: {self.speed_integral}\n"
         log_entry += f"Speed D: {speed_derivative}\n"
 
-        # Compute steering using PID
+        # Compute throttle and brake using PID
         original_throttle_brake = (
             self.speed_kp * speed_error +
             self.speed_ki * self.speed_integral +
@@ -261,8 +300,8 @@ class SimpleController(Node):
         log_entry += f"Speed P Contribution: {self.speed_kp * speed_error}\n"
         log_entry += f"Speed I Contribution: {self.speed_ki * self.speed_integral}\n"
         log_entry += f"Speed D Contribution: {self.speed_kd * speed_derivative}\n"
-        log_entry += f"Calculated Throttle/Brake: {original_steering}\n"
-        log_entry += f"Clipped Throttle: {clipped_steering}\n"
+        log_entry += f"Calculated Throttle/Brake: {original_throttle_brake}\n"
+        log_entry += f"Clipped Throttle: {clipped_throttle}\n"
         log_entry += f"Clipped Brake: {clipped_brake}\n"
 
         # Update previous error and time for next iteration
@@ -273,6 +312,11 @@ class SimpleController(Node):
         with open("odometry_callback.log", "a") as f:
             log_entry += "\n---\n\n"
             f.write(log_entry)
+
+        # Check if we have reached the end of the batch
+        if self.waypoint_manager.is_end_of_batch(self.last_waypoint_index):
+            self.logger.info('Reached end of batch. Preparing to switch gear.')
+            self.switching_gear = True
 
     def find_closest_waypoint(self, waypoints_x, waypoints_y, x, y):
         """
@@ -347,29 +391,74 @@ class SimpleController(Node):
         if self.vehicle is None:
             return
         self.vehicle.apply_control(self.control)
-        self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle},Brake={self.control.brake}')
+        self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle},Brake={self.control.brake},Reverse={self.control.reverse}')
 
 
 class WaypointManager:
-    def __init__(self, filename="waypoints.csv"):
-        waypoints = pd.read_csv(filename)
-        self.waypoints_x = waypoints['x'].to_numpy()
-        self.waypoints_y = waypoints['y'].to_numpy()
-        self.num_waypoints = len(self.waypoints_x)
+    def __init__(self, filename="waypoints_full.csv"):
+        self.batches = []  # List of batches, each batch is a dict with 'x' and 'y' arrays
+        self.parse_waypoints_file(filename)
+        self.current_batch_index = 0
+        self.num_batches = len(self.batches)
+
+    def parse_waypoints_file(self, filename):
+        batch = {'x': [], 'y': []}
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+            is_header = True
+            for line in lines:
+                line = line.strip()
+                if line == '===':
+                    if batch['x']:  # Non-empty batch
+                        self.batches.append(batch)
+                        batch = {'x': [], 'y': []}
+                    is_header = True  # Next batch will start with header
+                elif line:
+                    if is_header:
+                        # Expecting header 'x,y'
+                        is_header = False
+                        continue  # Skip the header
+                    else:
+                        # Expecting data
+                        x_str, y_str = line.split(',')[:2]
+                        batch['x'].append(float(x_str))
+                        batch['y'].append(float(y_str))
+            # Add the last batch if not empty
+            if batch['x']:
+                self.batches.append(batch)
 
     def next_waypoints(self, last_waypoint_index, length):
         """
-        Returns the next 'length' waypoints starting from 'last_waypoint_index'.
-        Wraps around if the end of the list is reached.
+        Returns the next 'length' waypoints starting from 'last_waypoint_index' in the current batch.
         """
+        current_batch = self.batches[self.current_batch_index]
+        waypoints_x = current_batch['x']
+        waypoints_y = current_batch['y']
         start = last_waypoint_index
         end = start + length
-        if end > self.num_waypoints:
-            end = self.num_waypoints
+        if end > len(waypoints_x):
+            end = len(waypoints_x)
         return (
-            self.waypoints_x[start:end],
-            self.waypoints_y[start:end]
+            np.array(waypoints_x[start:end]),
+            np.array(waypoints_y[start:end])
         )
+
+    def is_end_of_batch(self, waypoint_index):
+        """
+        Checks if the given waypoint index is at the end of the current batch.
+        """
+        current_batch = self.batches[self.current_batch_index]
+        return waypoint_index >= len(current_batch['x']) - 1
+
+    def switch_to_next_batch(self):
+        """
+        Switches to the next batch. Returns True if there is a next batch, False otherwise.
+        """
+        if self.current_batch_index + 1 < self.num_batches:
+            self.current_batch_index += 1
+            return True
+        else:
+            return False
 
 
 def main(args=None):
