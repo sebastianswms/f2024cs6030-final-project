@@ -1,6 +1,7 @@
 /build/
 /install/
 /log/
+**/.secrets/*
 *.log
 /camera/saved_images
 /camera/yolov3.weights
