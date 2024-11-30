@@ -19,6 +19,10 @@ ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py
 ```
 
 ```bash
+cd ~/ssmiley/f2024cs6030-final-project/project/snowplow_ws &&
+python3 map_setup.py
+
+```bash
 ros2 service call /carla/spawn_object carla_msgs/srv/SpawnObject "{type: 'walker.pedestrian.0001', id: 'pedestrian_1', transform: {position: {x: 62.0, y: 85.0, z: 8.0}, orientation: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}}}"
 ```
 
