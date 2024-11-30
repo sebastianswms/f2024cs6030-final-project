@@ -10,6 +10,9 @@ from ackermann_msgs.msg import AckermannDrive
 import carla
 import numpy as np
 import time
+import pandas as pd
+import numpy as np
+from io import StringIO
 
 class SimpleController(Node):
     """
@@ -49,19 +52,30 @@ class SimpleController(Node):
         # <tuning_parameters>
         # ===================
 
-        # PID controller gains for steering
-        self.steering_kp = 3
-        self.steering_ki = 0.0
-        self.steering_kd = 0.0
+        # PID controller gains for steering forward
+        self.steering_forward_kp = 3
+        self.steering_forward_ki = 0.0
+        self.steering_forward_kd = 0.0
+
+
+        # PID controller gains for steering backward
+        self.steering_backward_kp = 0.1
+        self.steering_backward_ki = 0.0
+        self.steering_backward_kd = 0.04
+
 
         # PID controller gains for speed
         self.speed_kp = 0.8
         self.speed_ki = 0.0
         self.speed_kd = 0.1
 
+
         # Other tuning parameters
-        self.target_speed_kph = 20 # Kilometers Per Hour
-        self.waypoints_lookahead = 30 # Number of waypoints to look ahead, NOT distance
+        self.target_speed_forward_kph = 30 # Kilometers Per Hour
+        self.target_speed_backward_kph = 10 # Kilometers Per Hour
+
+        self.max_waypoints_lookahead = 30 # Number of waypoints to look ahead, NOT distance
+        self.min_waypoints_lookahead = 8 # Switch to the next batch of waypoints if less than this number remain
 
         # ====================
         # </tuning_parameters>
@@ -71,7 +85,8 @@ class SimpleController(Node):
         self.current_gear = 'forward'  # Can be 'forward' or 'reverse'
         self.switching_gear = False
         self.stop_threshold = 0.1  # Speed below which we consider the vehicle stopped
-        self.stop_vehicle = False  # Flag to stop the vehicle when no more batches
+        self.stop_vehicle = False
+        self.batch_index = 0
 
         # Subscribers
         self.create_subscription(
@@ -139,11 +154,41 @@ class SimpleController(Node):
         if self.stop_vehicle:
             return
 
-        log_entry = "*** Yaw Calculation ***\n"
-
         if self.vehicle is None:
             self.logger.warn("Vehicle reference is not set.")
             return
+
+        if self.switching_gear:
+            self.control.throttle = 0.0
+            self.control.brake = 1.0
+            self.control.steer = 0.0
+
+            current_velocity = self.vehicle.get_velocity()
+            current_speed = np.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
+            if current_speed < self.stop_threshold:
+                if self.current_gear == 'forward':
+                    self.current_gear = 'reverse'
+                    self.control.reverse = True
+                else:
+                    self.current_gear = 'forward'
+                    self.control.reverse = False
+                self.logger.info(f'Switched to {self.current_gear} gear.')
+
+                self.last_waypoint_index = 0
+
+                if self.batch_index >= self.waypoint_manager.get_total_batches():
+                    self.logger.info('No more batches. Stopping vehicle.')
+                    self.control.throttle = 0.0
+                    self.control.brake = 1.0
+                    self.control.steer = 0.0
+                    self.stop_vehicle = True
+                else:
+                    self.logger.info(f'Switched to batch {self.batch_index}')
+                self.switching_gear = False
+            else:
+                return
+
+        log_entry = "*** Yaw Calculation ***\n"
         
         # Get current time and compute delta time
         current_time = time.time()
@@ -161,12 +206,17 @@ class SimpleController(Node):
         current_yaw = self.quaternion_to_yaw(orientation)
         log_entry += f"Calculated Yaw: {current_yaw}\n"
 
-        waypoints_x, waypoints_y = self.waypoint_manager.next_waypoints(
-            self.last_waypoint_index, self.waypoints_lookahead
+        waypoints_x, waypoints_y, next_batch = self.waypoint_manager.next_waypoints(
+            self.batch_index,
+            self.last_waypoint_index,
+            self.max_waypoints_lookahead,
+            self.min_waypoints_lookahead,
         )
 
         if len(waypoints_x) == 0:
             self.logger.warn("No waypoints available.")
+            self.batch_index += 1
+            self.switching_gear = True
             return
 
         closest_index = self.find_closest_waypoint(waypoints_x, waypoints_y, self.vehicle_x, self.vehicle_y)
@@ -174,7 +224,7 @@ class SimpleController(Node):
         log_entry += f"Last Waypoint Index: {self.last_waypoint_index}\n"
 
         self.last_waypoint_index += closest_index
-        if self.last_waypoint_index >= self.waypoint_manager.num_waypoints:
+        if self.last_waypoint_index >= self.waypoint_manager.get_num_waypoints(self.batch_index):
             raise RuntimeError("Waypoints went overboard")
 
         # Determine desired yaw based on the waypoint before the target waypoint
@@ -184,14 +234,20 @@ class SimpleController(Node):
             self.last_waypoint_index += 1
         previous_waypoint_index = target_waypoint_index - 1
 
+        if target_waypoint_index >= self.waypoint_manager.get_num_waypoints(self.batch_index):
+            self.logger.warn("Target waypoint out of range, switching to next batch.")
+            self.batch_index += 1
+            self.switching_gear = True
+            return
+
         log_entry += f"Target Waypoint Index: {target_waypoint_index}\n"
         log_entry += f"Previous Waypoint Index: {previous_waypoint_index}\n"
-        log_entry += f"Target Waypoint: X={self.waypoint_manager.waypoints_x[target_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[target_waypoint_index]}\n"
-        log_entry += f"Previous Waypoint: X={self.waypoint_manager.waypoints_x[previous_waypoint_index]}, Y={self.waypoint_manager.waypoints_y[previous_waypoint_index]}\n"
+        log_entry += f"Target Waypoint: X={self.waypoint_manager.get_waypoints_x(self.batch_index)[target_waypoint_index]}, Y={self.waypoint_manager.get_waypoints_y(self.batch_index)[target_waypoint_index]}\n"
+        log_entry += f"Previous Waypoint: X={self.waypoint_manager.get_waypoints_x(self.batch_index)[previous_waypoint_index]}, Y={self.waypoint_manager.get_waypoints_y(self.batch_index)[previous_waypoint_index]}\n"
 
         desired_yaw = math.atan2(
-            self.waypoint_manager.waypoints_y[target_waypoint_index] - self.waypoint_manager.waypoints_y[previous_waypoint_index],
-            self.waypoint_manager.waypoints_x[target_waypoint_index] - self.waypoint_manager.waypoints_x[previous_waypoint_index]
+            self.waypoint_manager.get_waypoints_y(self.batch_index)[target_waypoint_index] - self.waypoint_manager.get_waypoints_y(self.batch_index)[previous_waypoint_index],
+            self.waypoint_manager.get_waypoints_x(self.batch_index)[target_waypoint_index] - self.waypoint_manager.get_waypoints_x(self.batch_index)[previous_waypoint_index]
         )
 
         log_entry += f"Computed Desired Yaw: {desired_yaw}\n"
@@ -211,22 +267,41 @@ class SimpleController(Node):
         log_entry += f"Steering I: {self.steering_integral}\n"
         log_entry += f"Steering D: {steering_derivative}\n"
 
-        # Compute steering using PID
-        original_steering = (
-            self.steering_kp * yaw_error +
-            self.steering_ki * self.steering_integral +
-            self.steering_kd * steering_derivative
-        )
-        clipped_steering = np.clip(original_steering, -1.0, 1.0)
-        self.control.steer = clipped_steering
+        
+        if self.current_gear == "forward":
+            original_steering = (
+                self.steering_forward_kp * yaw_error +
+                self.steering_forward_ki * self.steering_integral +
+                self.steering_forward_kd * steering_derivative
+            )
+            clipped_steering = np.clip(original_steering, -1.0, 1.0)
+            self.control.steer = clipped_steering
 
-        log_entry += f"Steering P Contribution: {self.steering_kp * yaw_error}\n"
-        log_entry += f"Steering I Contribution: {self.steering_ki * self.steering_integral}\n"
-        log_entry += f"Steering D Contribution: {self.steering_kd * steering_derivative}\n"
-        log_entry += f"Calculated Steering: {original_steering}\n"
-        log_entry += f"Clipped Steering: {clipped_steering}\n"
+            log_entry += f"Steering P Contribution: {self.steering_forward_kp * yaw_error}\n"
+            log_entry += f"Steering I Contribution: {self.steering_forward_ki * self.steering_integral}\n"
+            log_entry += f"Steering D Contribution: {self.steering_forward_kd * steering_derivative}\n"
+            log_entry += f"Calculated Steering: {original_steering}\n"
+            log_entry += f"Clipped Steering: {clipped_steering}\n"
 
-        target_speed_mps = self.target_speed_kph / 3.6
+            target_speed_mps = self.target_speed_forward_kph / 3.6
+        else:
+            original_steering = (
+                self.steering_backward_kp * yaw_error +
+                self.steering_backward_ki * self.steering_integral +
+                self.steering_backward_kd * steering_derivative
+            )
+            clipped_steering = np.clip(original_steering, -1.0, 1.0)
+            self.control.steer = clipped_steering
+
+            log_entry += f"Steering P Contribution: {self.steering_backward_kp * yaw_error}\n"
+            log_entry += f"Steering I Contribution: {self.steering_backward_ki * self.steering_integral}\n"
+            log_entry += f"Steering D Contribution: {self.steering_backward_kd * steering_derivative}\n"
+            log_entry += f"Calculated Steering: {original_steering}\n"
+            log_entry += f"Clipped Steering: {clipped_steering}\n"
+
+            target_speed_mps = self.target_speed_backward_kph / 3.6
+
+        
 
         log_entry += f"\n*** Speed PID Calculation ***\n"
         log_entry += f"Delta Time (again): {delta_time}\n"
@@ -273,6 +348,10 @@ class SimpleController(Node):
         self.steering_previous_error = yaw_error
         self.speed_previous_error = speed_error
         self.previous_time = current_time
+
+        if next_batch:
+            self.batch_index += 1
+            self.switching_gear = True
 
         with open("odometry_callback.log", "a") as f:
             log_entry += "\n---\n\n"
@@ -353,26 +432,64 @@ class SimpleController(Node):
         self.vehicle.apply_control(self.control)
         self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle},Brake={self.control.brake}')
 
-
 class WaypointManager:
-    def __init__(self, filename="waypoints.csv"):
-        waypoints = pd.read_csv(filename)
-        self.waypoints_x = waypoints['x'].to_numpy()
-        self.waypoints_y = waypoints['y'].to_numpy()
-        self.num_waypoints = len(self.waypoints_x)
+    def __init__(self, filename="waypoints.csv", delimiter="==="):
+        self.batches = []  # List to store each batch's waypoints
+        self._load_batches(filename, delimiter)
+    
+    def _load_batches(self, filename, delimiter):
+        with open(filename, 'r') as file:
+            content = file.read()
+        
+        for raw_batch in content.split(delimiter):
+            raw_batch = raw_batch.strip()
+            if not raw_batch:
+                continue
+            batch_df = pd.read_csv(StringIO(raw_batch))                
+            waypoints_x = batch_df['x'].to_numpy()
+            waypoints_y = batch_df['y'].to_numpy()
+            num_waypoints = min(len(waypoints_x), len(waypoints_y))
+            batch_data = {
+                'waypoints_x': waypoints_x,
+                'waypoints_y': waypoints_y,
+                'num_waypoints': num_waypoints
+            }
+            self.batches.append(batch_data)
+    
+    def get_waypoints_x(self, batch_index):
+        return self._get_batch_data(batch_index, 'waypoints_x')
+    
+    def get_waypoints_y(self, batch_index):
+        return self._get_batch_data(batch_index, 'waypoints_y')
+    
+    def get_num_waypoints(self, batch_index):  # batch_index must be int
+        return self._get_batch_data(batch_index, 'num_waypoints')
+    
+    def _get_batch_data(self, batch_index, key):
+        if batch_index >= self.get_total_batches():
+            raise IndexError(f"Batch index {batch_index} is out of range. Total batches: {len(self.batches)}.")
+        return self.batches[batch_index][key]
+    
+    def get_total_batches(self):
+        return len(self.batches)
 
-    def next_waypoints(self, last_waypoint_index, length):
+    def next_waypoints(self, batch_index, last_waypoint_index, length, min_waypoints):
         """
         Returns the next 'length' waypoints starting from 'last_waypoint_index'.
-        Wraps around if the end of the list is reached.
+        Truncates if the end of the list is reached.
+        Switches gears and changes to the next batch if remaining waypoints < min_waypoints
         """
         start = last_waypoint_index
         end = start + length
-        if end > self.num_waypoints:
-            end = self.num_waypoints
+        if end > self.get_num_waypoints(batch_index):
+            end = self.get_num_waypoints(batch_index)
+
+        next_batch = end < min_waypoints
+
         return (
-            self.waypoints_x[start:end],
-            self.waypoints_y[start:end]
+            self.get_waypoints_x(batch_index)[start:end],
+            self.get_waypoints_y(batch_index)[start:end],
+            next_batch,
         )
 
 
