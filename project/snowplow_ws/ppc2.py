@@ -30,6 +30,7 @@ class SimpleController(Node):
         self.control = carla.VehicleControl()
         self.control.steer = 0.0 # Default steering value
         self.control.throttle = 0.0 # Default throttle value
+        self.control.reverse = False  # Start in forward gear
 
         self.waypoint_manager = WaypointManager()
         self.last_waypoint_index = 0
@@ -59,12 +60,18 @@ class SimpleController(Node):
         self.speed_kd = 0.1
 
         # Other tuning parameters
-        self.target_speed_kph = 30 # Kilometers Per Hour
+        self.target_speed_kph = 20 # Kilometers Per Hour
         self.waypoints_lookahead = 30 # Number of waypoints to look ahead, NOT distance
 
         # ====================
         # </tuning_parameters>
         # ====================
+
+        # Gear management
+        self.current_gear = 'forward'  # Can be 'forward' or 'reverse'
+        self.switching_gear = False
+        self.stop_threshold = 0.1  # Speed below which we consider the vehicle stopped
+        self.stop_vehicle = False  # Flag to stop the vehicle when no more batches
 
         # Subscribers
         self.create_subscription(
@@ -129,6 +136,9 @@ class SimpleController(Node):
         Goal is to update self.control.steer and self.control.throttle
         """
 
+        if self.stop_vehicle:
+            return
+
         log_entry = "*** Yaw Calculation ***\n"
 
         if self.vehicle is None:
@@ -141,20 +151,16 @@ class SimpleController(Node):
         if delta_time <= 0.0:
             delta_time = 1e-3  # Prevent division by zero
 
-        # Current vehicle position
         self.vehicle_x = msg.pose.pose.position.x
         self.vehicle_y = msg.pose.pose.position.y
         log_entry += f"Vehicle X: {self.vehicle_x}\nVehicle Y: {self.vehicle_y}\n"
 
-        # Current vehicle yaw (assuming yaw is in radians)
-        # Convert quaternion to Euler angles if necessary
         orientation = msg.pose.pose.orientation
         log_entry += f"Raw Orientation: {orientation}\n"
 
         current_yaw = self.quaternion_to_yaw(orientation)
         log_entry += f"Calculated Yaw: {current_yaw}\n"
 
-        # Get next waypoints
         waypoints_x, waypoints_y = self.waypoint_manager.next_waypoints(
             self.last_waypoint_index, self.waypoints_lookahead
         )
@@ -163,12 +169,10 @@ class SimpleController(Node):
             self.logger.warn("No waypoints available.")
             return
 
-        # Find the closest waypoint index
         closest_index = self.find_closest_waypoint(waypoints_x, waypoints_y, self.vehicle_x, self.vehicle_y)
 
         log_entry += f"Last Waypoint Index: {self.last_waypoint_index}\n"
 
-        # Update last_waypoint_index
         self.last_waypoint_index += closest_index
         if self.last_waypoint_index >= self.waypoint_manager.num_waypoints:
             raise RuntimeError("Waypoints went overboard")
@@ -247,7 +251,7 @@ class SimpleController(Node):
         log_entry += f"Speed I: {self.speed_integral}\n"
         log_entry += f"Speed D: {speed_derivative}\n"
 
-        # Compute steering using PID
+        # Compute throttle and brake using PID
         original_throttle_brake = (
             self.speed_kp * speed_error +
             self.speed_ki * self.speed_integral +
@@ -261,8 +265,8 @@ class SimpleController(Node):
         log_entry += f"Speed P Contribution: {self.speed_kp * speed_error}\n"
         log_entry += f"Speed I Contribution: {self.speed_ki * self.speed_integral}\n"
         log_entry += f"Speed D Contribution: {self.speed_kd * speed_derivative}\n"
-        log_entry += f"Calculated Throttle/Brake: {original_steering}\n"
-        log_entry += f"Clipped Throttle: {clipped_steering}\n"
+        log_entry += f"Calculated Throttle/Brake: {original_throttle_brake}\n"
+        log_entry += f"Clipped Throttle: {clipped_throttle}\n"
         log_entry += f"Clipped Brake: {clipped_brake}\n"
 
         # Update previous error and time for next iteration
