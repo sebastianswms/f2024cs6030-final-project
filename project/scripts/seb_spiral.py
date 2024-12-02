@@ -107,7 +107,7 @@ def push_snow_out(current_x, current_y, push_end_x, push_end_y, spacing):
     # Reverse back to the original point (excluding the last point to avoid duplication)
     push_in_waypoints = push_out_waypoints[:-1][::-1]
     
-    return push_out_waypoints + push_in_waypoints
+    return push_out_waypoints + [(-1,-1)] + push_in_waypoints + [(-1,-1)]
 
 def generate_waypoints(first_corner, second_corner):
     """
@@ -289,8 +289,12 @@ if __name__ == "__main__":
 
         previous_points = []  # To track the last two waypoints
 
+        toggle = True
+
         for x, y in waypoints:
-            if len(previous_points) >= 2 and (x, y) == previous_points[-2]:
+            if (x, y) == (-1, -1):
                 writer.writerow({'x': '===', 'y': '==='})
+                writer.writerow({'x': 'x', 'y': 'y'})
+                continue
             writer.writerow({'x': x, 'y': y})
             previous_points.append((x, y))
