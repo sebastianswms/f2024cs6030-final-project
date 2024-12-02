@@ -6,7 +6,6 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from carla_msgs.msg import CarlaActorList, CarlaEgoVehicleControl
 from std_msgs.msg import Bool
-from ackermann_msgs.msg import AckermannDrive
 import carla
 import numpy as np
 import time
@@ -433,7 +432,7 @@ class SimpleController(Node):
         self.logger.info(f'Applied Control: Steer={self.control.steer},Throttle={self.control.throttle},Brake={self.control.brake}')
 
 class WaypointManager:
-    def __init__(self, filename="waypoints.csv", delimiter="==="):
+    def __init__(self, filename="waypoints.csv", delimiter="===,==="):
         self.batches = []  # List to store each batch's waypoints
         self._load_batches(filename, delimiter)
     
@@ -445,7 +444,8 @@ class WaypointManager:
             raw_batch = raw_batch.strip()
             if not raw_batch:
                 continue
-            batch_df = pd.read_csv(StringIO(raw_batch))                
+            batch_df = pd.read_csv(StringIO(raw_batch))
+            print(batch_df)              
             waypoints_x = batch_df['x'].to_numpy()
             waypoints_y = batch_df['y'].to_numpy()
             num_waypoints = min(len(waypoints_x), len(waypoints_y))

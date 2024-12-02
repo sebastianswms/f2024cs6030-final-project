@@ -2,10 +2,10 @@ import csv
 import math
 
 # Input Parameters
-FIRST_CORNER = (0, 0)
-SECOND_CORNER = (80, 60)
+FIRST_CORNER = (305, 241)
+SECOND_CORNER = (264, 179)
 SNOWPLOW_WIDTH = 4
-WAYPOINT_SPACING = 0.1
+WAYPOINT_SPACING = 0.5
 TURNING_RADIUS = 6
 
 def frange(start, stop, step):
@@ -286,5 +286,11 @@ if __name__ == "__main__":
         fieldnames = ['x', 'y']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
+
+        previous_points = []  # To track the last two waypoints
+
         for x, y in waypoints:
+            if len(previous_points) >= 2 and (x, y) == previous_points[-2]:
+                writer.writerow({'x': '===', 'y': '==='})
             writer.writerow({'x': x, 'y': y})
+            previous_points.append((x, y))

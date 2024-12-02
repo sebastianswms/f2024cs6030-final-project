@@ -24,7 +24,7 @@
         {
             "type": "vehicle.tesla.cybertruck",
             "id": "ego_vehicle",
-            "spawn_point": {"x": 304.0, "y": 238.0, "z": 1.0, "roll": 0.0, "pitch": 0.0, "yaw": -90.0},
+            "spawn_point": {"x": 266.0, "y": 181.0, "z": 1.0, "roll": 0.0, "pitch": 0.0, "yaw": 90.0},
             "sensors": 
             [
                 {
