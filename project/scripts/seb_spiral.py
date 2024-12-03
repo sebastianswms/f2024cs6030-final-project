@@ -101,12 +101,23 @@ def push_snow_out(current_x, current_y, push_end_x, push_end_y, spacing):
     Returns:
         list of tuple: List of waypoints for pushing snow out and reversing back.
     """
+    print("current X = ", current_x, "current Y = ", current_y)
+    print("Push X = ", push_end_x, "Push Y = ", push_end_y)
+    
+    #find the difference between current x and push out x
+    diff_x = abs(push_end_x - current_x) 
+    diff_y  = abs(push_end_y - current_y)
+    print(diff_x, diff_y)
+    
     # Push out to the edge
-    push_out_waypoints = generate_straight_waypoints(current_x, current_y, push_end_x, push_end_y, spacing)
+    push_out_waypoints = generate_straight_waypoints(current_x, current_y, push_end_x - diff_x, push_end_y - diff_y, spacing)
     
     # Reverse back to the original point (excluding the last point to avoid duplication)
-    push_in_waypoints = push_out_waypoints[:-1][::-1]
-    
+    #push_in_waypoints = push_out_waypoints[:-1][::-1]
+    push_in_waypoints = generate_straight_waypoints(push_end_x, push_end_y, current_x, current_y, spacing)
+    print(push_out_waypoints)
+    print()
+    print(push_in_waypoints)
     return push_out_waypoints + [(-1,-1)] + push_in_waypoints + [(-1,-1)]
 
 def generate_waypoints(first_corner, second_corner):
