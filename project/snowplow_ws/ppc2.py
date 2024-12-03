@@ -54,7 +54,13 @@ class SimpleController(Node):
         # PID controller gains for steering forward
         self.steering_forward_kp = 3
         self.steering_forward_ki = 0.0
-        self.steering_forward_kd = 0.0
+        self.steering_forward_kd = 0.097
+
+        # 0.09 too far in
+        # 0.1 too far out
+        # 0.094 too far in
+        # 0.097 too far out
+        # 0.0955 too far in
 
         # ros2 service call /carla/spawn_object carla_msgs/srv/SpawnObject "{type'walker.pedestrian.0001', id: 'pedestrian_1', transform: {position: {x: 303.4, y: 225.0, z: 0.5}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}}}"
 
@@ -122,6 +128,9 @@ class SimpleController(Node):
 
         with open("odometry_callback.log", "w") as f:
             pass
+
+        with open("actual_waypoints.csv", "w") as f:
+            f.write(f"x,y\n")
 
         # Timer to send control commands at regular intervals
         self.timer = self.create_timer(0.05, self.publish_control_command)
@@ -353,9 +362,12 @@ class SimpleController(Node):
             self.batch_index += 1
             self.switching_gear = True
 
-        with open("odometry_callback.log", "a") as f:
-            log_entry += "\n---\n\n"
-            f.write(log_entry)
+        # with open("odometry_callback.log", "a") as f:
+        #     log_entry += "\n---\n\n"
+        #     f.write(log_entry)
+
+        with open("actual_waypoints.csv", "a") as f:
+            f.write(f"{self.vehicle_x},{self.vehicle_y}\n")
 
     def find_closest_waypoint(self, waypoints_x, waypoints_y, x, y):
         """
@@ -446,7 +458,6 @@ class WaypointManager:
             if not raw_batch:
                 continue
             batch_df = pd.read_csv(StringIO(raw_batch))
-            print(batch_df)              
             waypoints_x = batch_df['x'].to_numpy()
             waypoints_y = batch_df['y'].to_numpy()
             num_waypoints = min(len(waypoints_x), len(waypoints_y))
