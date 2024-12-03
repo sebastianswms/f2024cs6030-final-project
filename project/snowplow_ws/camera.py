@@ -36,7 +36,7 @@ class YoloDetectionNode(Node):
 
         # To issue a stop command, at least one detection box must have an area in
         # pixels squared greater than or equal to this value
-        self.minimum_box_size = 900
+        self.minimum_box_size = 600
 
         self.enable_saving_images = False
         self.save_dir = "./camera/saved_images"

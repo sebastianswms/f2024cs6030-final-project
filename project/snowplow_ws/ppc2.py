@@ -56,11 +56,12 @@ class SimpleController(Node):
         self.steering_forward_ki = 0.0
         self.steering_forward_kd = 0.0
 
+        # ros2 service call /carla/spawn_object carla_msgs/srv/SpawnObject "{type'walker.pedestrian.0001', id: 'pedestrian_1', transform: {position: {x: 303.4, y: 225.0, z: 0.5}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}}}"
 
         # PID controller gains for steering backward
-        self.steering_backward_kp = 0.1
+        self.steering_backward_kp = 0.01
         self.steering_backward_ki = 0.0
-        self.steering_backward_kd = 0.04
+        self.steering_backward_kd = 0.0
 
 
         # PID controller gains for speed

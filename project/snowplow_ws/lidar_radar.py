@@ -31,7 +31,7 @@ class SensorFusionNode(Node):
         # <tuning_parameters>
         # ===================
 
-        self.stop_distance_threshold = (3.0, 8.0)  # Stop if an object is further than X meters but closer than Y meters
+        self.stop_distance_threshold = (3.0, 5.0)  # Stop if an object is further than X meters but closer than Y meters
         self.lidar_cone_width = 60 # Filter lidar points to a frontal cone X degrees wide
         self.noise_threshold = 400 # Only issue a stop flag if at least X points are detected.
 
